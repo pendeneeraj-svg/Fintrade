@@ -675,6 +675,10 @@
         el.authForm.reset();
 
         toast('success', 'Welcome, ' + name + '!', 'Your account is ready with 50,000 virtual coins.');
+
+        if (window.TradeTeenTutorial && typeof window.TradeTeenTutorial.autoStartAfterLogin === 'function') {
+          window.TradeTeenTutorial.autoStartAfterLogin();
+        }
       });
     }
 
