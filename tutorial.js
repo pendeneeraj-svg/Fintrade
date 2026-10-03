@@ -2,20 +2,26 @@
   'use strict';
 
   var STORAGE_KEY = 'tradeteen.tutorialDone';
-  var DELAY_AFTER_LOGIN = 620;
+  var LOGIN_DELAY = 520;
 
   var STEPS = [
+    {
+      target: '.hero-inner',
+      placement: 'top',
+      title: 'Welcome to TradeTEEN',
+      body: 'This is your trading dashboard. Everything you need to practice the stock market without risking real money lives right here.'
+    },
     {
       target: '.portfolio-grid',
       placement: 'top',
       title: 'Your Portfolio Overview',
-      body: 'These four cards show your total portfolio value, today\u2019s profit or loss, available coins, and how much capital is currently invested.'
+      body: 'These four cards show your total portfolio value, today\u2019s profit or loss, available coins and how much capital is invested.'
     },
     {
       target: '.chart-card',
       placement: 'bottom',
       title: 'Live Market & Chart',
-      body: 'Pick any stock to see its live simulated price. Use the 1D, 1W, 1M and 1Y chips to change the chart range.'
+      body: 'Pick any stock to see its simulated live price. Use the 1D, 1W, 1M and 1Y chips to change the chart range.'
     },
     {
       target: '.order-card',
@@ -26,14 +32,20 @@
     {
       target: '#leaderboard',
       placement: 'top',
-      title: 'Leaderboards & Challenges',
-      body: 'Compete with traders worldwide, inside your school network, or against friends \u2014 and join weekly challenges to earn bonus coins.'
+      title: 'Leaderboards',
+      body: 'Compete with traders worldwide, inside your school network, or against friends. Rankings update as portfolios move.'
+    },
+    {
+      target: '#challenges',
+      placement: 'top',
+      title: 'Weekly Challenges',
+      body: 'Join weekly missions to sharpen your strategy and earn bonus coins when you complete them.'
     },
     {
       target: '#learning',
       placement: 'top',
       title: 'Learning Hub',
-      body: 'Bite-sized five-minute lessons and a searchable glossary will help you grow from a Rookie into a Pro Trader. That\u2019s it \u2014 happy trading!'
+      body: 'Bite-sized five-minute lessons and a searchable glossary help you grow from a Rookie into a Pro Trader. That\u2019s it \u2014 happy trading!'
     }
   ];
 
@@ -42,37 +54,54 @@
   var card = null;
   var dimmer = null;
   var currentIndex = 0;
-  var activeTarget = null;
-  var previousOverflow = '';
+  var activeSteps = [];
+  var isRunning = false;
+  var pendingLoginToken = null;
+  var missingRetryTimer = null;
   var keydownHandler = null;
   var resizeHandler = null;
+  var scrollHandler = null;
 
   function $(selector, ctx) {
     return (ctx || document).querySelector(selector);
   }
 
-  function hasCompleted() {
+  function safeGet(key) {
     try {
-      return window.localStorage.getItem(STORAGE_KEY) === '1';
+      return window.localStorage.getItem(key);
+    } catch (error) {
+      return null;
+    }
+  }
+
+  function safeSet(key, value) {
+    try {
+      window.localStorage.setItem(key, value);
+      return true;
     } catch (error) {
       return false;
     }
   }
 
-  function markCompleted() {
+  function safeRemove(key) {
     try {
-      window.localStorage.setItem(STORAGE_KEY, '1');
+      window.localStorage.removeItem(key);
+      return true;
     } catch (error) {
-      return;
+      return false;
     }
   }
 
+  function hasCompleted() {
+    return safeGet(STORAGE_KEY) === '1';
+  }
+
+  function markCompleted() {
+    safeSet(STORAGE_KEY, '1');
+  }
+
   function clearCompleted() {
-    try {
-      window.localStorage.removeItem(STORAGE_KEY);
-    } catch (error) {
-      return;
-    }
+    safeRemove(STORAGE_KEY);
   }
 
   function buildDom() {
@@ -83,7 +112,7 @@
     root.setAttribute('role', 'dialog');
     root.setAttribute('aria-modal', 'true');
     root.setAttribute('aria-label', 'Product tour');
-    root.setAttribute('hidden', 'hidden');
+    root.hidden = true;
 
     dimmer = document.createElement('div');
     dimmer.className = 'tour-dimmer';
@@ -125,12 +154,29 @@
     card.querySelector('[data-role="next"]').addEventListener('click', next);
   }
 
+  function isElementRenderable(el) {
+    if (!el) return false;
+    var rect = el.getBoundingClientRect();
+    if (rect.width === 0 && rect.height === 0) return false;
+    var style = window.getComputedStyle(el);
+    if (style.display === 'none' || style.visibility === 'hidden') return false;
+    return true;
+  }
+
   function getTargetRect(selector) {
     var el = document.querySelector(selector);
-    if (!el) return null;
-    var rect = el.getBoundingClientRect();
-    if (rect.width === 0 && rect.height === 0) return null;
-    return rect;
+    if (!isElementRenderable(el)) return null;
+    return el.getBoundingClientRect();
+  }
+
+  function collectValidSteps() {
+    var valid = [];
+    for (var i = 0; i < STEPS.length; i += 1) {
+      if (document.querySelector(STEPS[i].target)) {
+        valid.push(STEPS[i]);
+      }
+    }
+    return valid.length ? valid : STEPS.slice();
   }
 
   function positionSpotlight(rect) {
@@ -153,7 +199,9 @@
     var cardH = card.offsetHeight || 220;
     var gap = 18;
 
-    if (vw <= 480) return 'bottom';
+    if (vw <= 480) {
+      return rect.top > vh / 2 ? 'top' : 'bottom';
+    }
 
     var fits = {
       top: rect.top - gap - cardH >= 8,
@@ -210,22 +258,63 @@
   function scrollTargetIntoView(rect) {
     if (!rect) return;
     var vh = window.innerHeight;
-    var top = rect.top;
-    var bottom = rect.bottom;
-    if (top >= 90 && bottom <= vh - 120) return;
+    var safeTop = 96;
+    var safeBottom = vh - 140;
 
-    var target = rect.top + window.pageYOffset - vh / 3;
+    if (rect.top >= safeTop && rect.bottom <= safeBottom) return;
+
+    var targetY = rect.top + window.pageYOffset - vh / 3;
+    if (targetY < 0) targetY = 0;
+
     window.scrollTo({
-      top: Math.max(0, target),
+      top: targetY,
       behavior: 'smooth'
     });
   }
 
-  function render() {
-    var step = STEPS[currentIndex];
-    if (!step) return finish();
+  function reposition() {
+    if (!isRunning) return;
+    var step = activeSteps[currentIndex];
+    if (!step) return;
 
-    activeTarget = step.target;
+    var rect = getTargetRect(step.target);
+    if (!rect) return;
+
+    positionSpotlight(rect);
+    var placement = computePlacement(rect, step.placement);
+    positionCard(rect, placement);
+  }
+
+  function scheduleMissingRetry() {
+    if (missingRetryTimer) {
+      window.clearTimeout(missingRetryTimer);
+      missingRetryTimer = null;
+    }
+    var attempts = 0;
+    var maxAttempts = 12;
+
+    var attempt = function () {
+      var step = activeSteps[currentIndex];
+      if (!step) return;
+      if (getTargetRect(step.target)) {
+        render();
+        return;
+      }
+      attempts += 1;
+      if (attempts < maxAttempts) {
+        missingRetryTimer = window.setTimeout(attempt, 180);
+      } else {
+        next();
+      }
+    };
+
+    missingRetryTimer = window.setTimeout(attempt, 180);
+  }
+
+  function render() {
+    if (!card) return;
+    var step = activeSteps[currentIndex];
+    if (!step) return finish();
 
     var label = card.querySelector('[data-role="step-label"]');
     var title = card.querySelector('[data-role="title"]');
@@ -234,25 +323,28 @@
     var backBtn = card.querySelector('[data-role="back"]');
     var nextBtn = card.querySelector('[data-role="next"]');
 
-    label.textContent = 'Step ' + (currentIndex + 1) + ' of ' + STEPS.length;
+    label.textContent = 'Step ' + (currentIndex + 1) + ' of ' + activeSteps.length;
     title.textContent = step.title;
     body.textContent = step.body;
-    bar.style.width = ((currentIndex + 1) / STEPS.length * 100).toFixed(2) + '%';
+    bar.style.width = ((currentIndex + 1) / activeSteps.length * 100).toFixed(2) + '%';
     backBtn.disabled = currentIndex === 0;
-    nextBtn.textContent = currentIndex === STEPS.length - 1 ? 'Finish' : 'Next';
+    nextBtn.textContent = currentIndex === activeSteps.length - 1 ? 'Finish' : 'Next';
 
     var rect = getTargetRect(step.target);
     if (!rect) {
-      if (currentIndex < STEPS.length - 1) return next();
-      return finish();
+      scheduleMissingRetry();
+      return;
     }
 
     scrollTargetIntoView(rect);
 
     window.setTimeout(function () {
+      if (!isRunning) return;
       var liveRect = getTargetRect(step.target);
-      if (!liveRect) return;
-
+      if (!liveRect) {
+        scheduleMissingRetry();
+        return;
+      }
       positionSpotlight(liveRect);
       var placement = computePlacement(liveRect, step.placement);
       positionCard(liveRect, placement);
@@ -260,26 +352,20 @@
   }
 
   function next() {
-    if (currentIndex >= STEPS.length - 1) return finish();
+    if (!isRunning) return;
+    if (currentIndex >= activeSteps.length - 1) return finish();
     currentIndex += 1;
     render();
   }
 
   function prev() {
+    if (!isRunning) return;
     if (currentIndex <= 0) return;
     currentIndex -= 1;
     render();
   }
 
-  function start() {
-    buildDom();
-    currentIndex = 0;
-    root.removeAttribute('hidden');
-    root.classList.add('is-active');
-    document.body.classList.add('tour-open');
-    previousOverflow = document.body.style.overflow;
-    document.body.style.overflow = 'hidden';
-
+  function attachListeners() {
     keydownHandler = function (event) {
       if (event.key === 'Escape') {
         event.preventDefault();
@@ -288,54 +374,124 @@
         next();
       } else if (event.key === 'ArrowLeft') {
         prev();
+      } else if (event.key === 'Tab') {
+        trapFocus(event);
       }
     };
 
     resizeHandler = function () {
-      if (!root || root.hasAttribute('hidden')) return;
-      var step = STEPS[currentIndex];
-      if (!step) return;
-      var rect = getTargetRect(step.target);
-      if (!rect) return;
-      positionSpotlight(rect);
-      var placement = computePlacement(rect, step.placement);
-      positionCard(rect, placement);
+      reposition();
+    };
+
+    scrollHandler = function () {
+      reposition();
     };
 
     document.addEventListener('keydown', keydownHandler);
     window.addEventListener('resize', resizeHandler);
-    window.addEventListener('scroll', resizeHandler, true);
+    window.addEventListener('orientationchange', resizeHandler);
+    window.addEventListener('scroll', scrollHandler, true);
+  }
+
+  function detachListeners() {
+    if (keydownHandler) {
+      document.removeEventListener('keydown', keydownHandler);
+      keydownHandler = null;
+    }
+    if (resizeHandler) {
+      window.removeEventListener('resize', resizeHandler);
+      window.removeEventListener('orientationchange', resizeHandler);
+      resizeHandler = null;
+    }
+    if (scrollHandler) {
+      window.removeEventListener('scroll', scrollHandler, true);
+      scrollHandler = null;
+    }
+    if (missingRetryTimer) {
+      window.clearTimeout(missingRetryTimer);
+      missingRetryTimer = null;
+    }
+  }
+
+  function trapFocus(event) {
+    if (!card) return;
+    var focusable = card.querySelectorAll('button, [href], input, select, textarea, [tabindex]:not([tabindex="-1"])');
+    if (!focusable.length) return;
+
+    var first = focusable[0];
+    var last = focusable[focusable.length - 1];
+    var active = document.activeElement;
+
+    if (event.shiftKey && active === first) {
+      event.preventDefault();
+      last.focus();
+    } else if (!event.shiftKey && active === last) {
+      event.preventDefault();
+      first.focus();
+    }
+  }
+
+  function lockScroll() {
+    document.documentElement.classList.add('tour-scroll-lock');
+    document.body.classList.add('tour-scroll-lock');
+  }
+
+  function unlockScroll() {
+    document.documentElement.classList.remove('tour-scroll-lock');
+    document.body.classList.remove('tour-scroll-lock');
+  }
+
+  function start() {
+    if (isRunning) return;
+    buildDom();
+
+    activeSteps = collectValidSteps();
+    if (!activeSteps.length) return finish();
+
+    currentIndex = 0;
+    isRunning = true;
+    root.hidden = false;
+    root.classList.add('is-active');
+    lockScroll();
+    attachListeners();
+
+    window.scrollTo({
+      top: 0,
+      behavior: 'auto'
+    });
 
     render();
   }
 
   function finish() {
-    if (!root) return;
+    if (!root) {
+      markCompleted();
+      return;
+    }
 
+    markCompleted();
+    isRunning = false;
     root.classList.remove('is-active');
 
     window.setTimeout(function () {
-      if (root) root.setAttribute('hidden', 'hidden');
-      document.body.classList.remove('tour-open');
-      document.body.style.overflow = previousOverflow || '';
-
-      if (keydownHandler) {
-        document.removeEventListener('keydown', keydownHandler);
-        keydownHandler = null;
-      }
-      if (resizeHandler) {
-        window.removeEventListener('resize', resizeHandler);
-        window.removeEventListener('scroll', resizeHandler, true);
-        resizeHandler = null;
-      }
+      if (root) root.hidden = true;
+      unlockScroll();
+      detachListeners();
     }, 260);
-
-    markCompleted();
   }
 
   function reset() {
     clearCompleted();
-    start();
+    if (isRunning) {
+      isRunning = false;
+      if (root) {
+        root.classList.remove('is-active');
+        root.hidden = true;
+      }
+      unlockScroll();
+      detachListeners();
+    }
+    window.setTimeout(start, 60);
   }
 
   function shouldAutoStart() {
@@ -344,9 +500,18 @@
 
   function autoStartAfterLogin() {
     if (!shouldAutoStart()) return;
+    if (isRunning) return;
+
+    var token = Date.now() + '-' + Math.random();
+    pendingLoginToken = token;
+
     window.setTimeout(function () {
+      if (pendingLoginToken !== token) return;
+      pendingLoginToken = null;
+      if (isRunning) return;
+      if (!shouldAutoStart()) return;
       start();
-    }, DELAY_AFTER_LOGIN);
+    }, LOGIN_DELAY);
   }
 
   window.TradeTeenTutorial = {
